@@ -30,21 +30,45 @@ export class BotService {
 
     this.bot.onText(/\/start/, async (msg) => {
       const chatId = msg.chat.id;
-
-      // Foydalanuvchini bazaga saqlash (birinchi marta)
       const found = await this.botModel.findOne({ chatId });
       if (!found) {
         await this.botModel.create({ chatId, name: msg.from?.first_name });
       }
 
-      this.startTest(chatId);
+      this.bot.sendMessage(chatId, '👋 Salom! Matematik test botiga xush kelibsiz!', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '▶️ Testni boshlash', callback_data: 'start_test' }],
+          ],
+        },
+      });
+    });
+
+    this.bot.on('callback_query', async (query) => {
+      const chatId = query.message?.chat.id!;
+      const data = query.data;
+
+      try {
+        await this.bot.answerCallbackQuery(query.id);
+      } catch (e) {
+        // eski query, e'tibor bermaslik
+      }
+
+      if (data === 'start_test') {
+        this.startTest(chatId);
+      } else if (data === 'restart_yes') {
+        this.startTest(chatId);
+      } else if (data === 'restart_no') {
+        this.bot.sendMessage(chatId, '👋 Rahmat! Yana test ishlash uchun /start deb yozing.');
+        const session = this.sessions.get(chatId);
+        if (session) session.phase = 'idle';
+      }
     });
 
     this.bot.on('message', (msg) => {
       const chatId = msg.chat.id;
       const text = msg.text;
 
-      // /start buyrug'ini bu yerda qayta ishlamaymiz
       if (!text || text === '/start') return;
 
       const session = this.sessions.get(chatId);
@@ -52,19 +76,11 @@ export class BotService {
 
       if (session.phase === 'question') {
         this.handleAnswer(chatId, text, session);
-        return;
-      }
-
-      if (session.phase === 'result') {
-        this.handleRestart(chatId, text, session);
-        return;
       }
     });
   }
 
-  // ─── Test boshlash ───────────────────────────────────────────────
   private startTest(chatId: number) {
-    // Eski timer bo'lsa bekor qilish
     const old = this.sessions.get(chatId);
     if (old?.timer) clearTimeout(old.timer);
 
@@ -81,13 +97,12 @@ export class BotService {
 
     this.bot.sendMessage(
       chatId,
-      'Matematik test boshlandi! Sizga 10 ta savol beriladi. Har bir savolga javob berish uchun 10 soniya vaqt bor.',
+      '🧮 Matematik test boshlandi!\nSizga 10 ta savol beriladi.\n⏱ Har bir savolga 10 soniya vaqt bor.',
     );
 
     setTimeout(() => this.askQuestion(chatId), 1000);
   }
 
-  // ─── Savol berish ────────────────────────────────────────────────
   private askQuestion(chatId: number) {
     const session = this.sessions.get(chatId);
     if (!session) return;
@@ -100,45 +115,37 @@ export class BotService {
 
     this.bot.sendMessage(chatId, text);
 
-    // 10 soniyalik timer
     session.timer = setTimeout(() => {
-      this.bot.sendMessage(chatId, '⏰ Vaqt tugadi! Savol o\'tkazib yuborildi.');
+      this.bot.sendMessage(chatId, "⏰ Vaqt tugadi! Savol o'tkazib yuborildi.");
       session.skip += 1;
       this.nextStep(chatId);
     }, 10000);
   }
 
-  // ─── Javobni tekshirish ──────────────────────────────────────────
   private handleAnswer(chatId: number, text: string, session: TestState) {
     const num = parseInt(text.trim(), 10);
 
-    // Son emas
     if (isNaN(num) || String(num) !== text.trim()) {
-      this.bot.sendMessage(chatId, 'Faqat son kiriting.');
+      this.bot.sendMessage(chatId, '⚠️ Faqat son kiriting.');
       return;
     }
 
-    // Timerni bekor qilish
     if (session.timer) {
       clearTimeout(session.timer);
       session.timer = null;
     }
 
     if (num === session.answer) {
-      this.bot.sendMessage(chatId, 'To\'g\'ri ✅');
+      this.bot.sendMessage(chatId, "✅ To'g'ri!");
       session.correct += 1;
     } else {
-      this.bot.sendMessage(
-        chatId,
-        `Noto'g'ri ❌ To'g'ri javob: ${session.answer}`,
-      );
+      this.bot.sendMessage(chatId, `❌ Noto'g'ri! To'g'ri javob: ${session.answer}`);
       session.wrong += 1;
     }
 
     this.nextStep(chatId);
   }
 
-  // ─── Keyingi qadam (savol yoki natija) ──────────────────────────
   private nextStep(chatId: number) {
     const session = this.sessions.get(chatId);
     if (!session) return;
@@ -150,7 +157,6 @@ export class BotService {
     }
   }
 
-  // ─── Natijani ko'rsatish ─────────────────────────────────────────
   private showResult(chatId: number) {
     const session = this.sessions.get(chatId);
     if (!session) return;
@@ -158,34 +164,31 @@ export class BotService {
     session.phase = 'result';
     const percent = Math.round((session.correct / 10) * 100);
 
+    let emoji = '😔';
+    if (percent >= 80) emoji = '🏆';
+    else if (percent >= 60) emoji = '👍';
+    else if (percent >= 40) emoji = '😐';
+
     this.bot.sendMessage(
       chatId,
-      `Test tugadi!\nSiz 10 ta savoldan ${session.correct} tasiga to'g'ri javob berdingiz.\nNatijangiz: ${percent}%`,
+      `${emoji} Test tugadi!\n\n` +
+      `✅ To'g'ri: ${session.correct}\n` +
+      `❌ Noto'g'ri: ${session.wrong}\n` +
+      `⏭ O'tkazilgan: ${session.skip}\n\n` +
+      `📊 Natijangiz: ${percent}%`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '🔄 Ha, qayta boshlash', callback_data: 'restart_yes' },
+              { text: '❌ Yo\'q', callback_data: 'restart_no' },
+            ],
+          ],
+        },
+      },
     );
-
-    setTimeout(() => {
-      this.bot.sendMessage(chatId, 'Yana ishlashni xohlaysizmi?\nha / yo\'q');
-    }, 700);
   }
 
-  // ─── Qayta boshlash yoki chiqish ─────────────────────────────────
-  private handleRestart(chatId: number, text: string, session: TestState) {
-    const val = text.trim().toLowerCase();
-
-    if (val === 'ha') {
-      this.startTest(chatId);
-    } else if (val === "yo'q" || val === 'yoq') {
-      this.bot.sendMessage(
-        chatId,
-        "Rahmat! Yana test ishlash uchun /start deb yozing.",
-      );
-      session.phase = 'idle';
-    } else {
-      this.bot.sendMessage(chatId, "Iltimos, ha yoki yo'q deb yozing.");
-    }
-  }
-
-  // ─── Savol generatsiya qilish ────────────────────────────────────
   private generateQuestion(qNum: number): { text: string; answer: number } {
     const a = Math.floor(Math.random() * 20) + 1;
     const b = Math.floor(Math.random() * 20) + 1;
@@ -195,21 +198,13 @@ export class BotService {
     let answer: number;
     let symbol: string;
 
-    if (op === '+') {
-      answer = a + b;
-      symbol = '+';
-    } else if (op === '-') {
-      answer = a - b;
-      symbol = '-';
-    } else {
-      answer = a * b;
-      symbol = '×';
-    }
+    if (op === '+') { answer = a + b; symbol = '+'; }
+    else if (op === '-') { answer = a - b; symbol = '-'; }
+    else { answer = a * b; symbol = '×'; }
 
     return {
-      text: `${qNum}-savol: ${a} ${symbol} ${b} = ?`,
+      text: `${qNum}-savol: ${a} ${symbol} ${b} = ?\n⏱ 10 soniya`,
       answer,
     };
   }
 }
-
